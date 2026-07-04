@@ -1,6 +1,6 @@
 # memtag
 
-**Keeps agent-written wikis trustworthy by tracking how memories decay — not just where they're stored.**
+**Keeps agent-written wikis trustworthy by tracking how memories decay, not just where they're stored.**
 
 The next bottleneck in agent memory isn't storage or retrieval. It's **decay**. Notes rot: guesses expire, loops contradict each other, agent speculation gets laundered into fact. Retrieval tools make rot easier to find. memtag makes it visible and disposable.
 
