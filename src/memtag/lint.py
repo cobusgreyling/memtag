@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from memtag.models import MEMTAG_VERSION, VALID_STATUSES, LintIssue, LintReport, MemoryMeta, MemoryStatus
+from memtag.models import (
+    MEMTAG_VERSION,
+    VALID_STATUSES,
+    LintIssue,
+    LintReport,
+    MemoryMeta,
+    MemoryStatus,
+)
 from memtag.parser import _normalize_contradicted_by, render_frontmatter
 from memtag.trust import _find_contradictions, enrich_vault
 from memtag.vault import load_vault, resolve_supersedes_target
@@ -173,9 +180,12 @@ def _report_derived_tampering(
         return
 
     mismatches: list[str] = []
-    if snapshot.trust is not None and note.trust is not None:
-        if abs(snapshot.trust - note.trust) > _TRUST_TOLERANCE:
-            mismatches.append("trust")
+    if (
+        snapshot.trust is not None
+        and note.trust is not None
+        and abs(snapshot.trust - note.trust) > _TRUST_TOLERANCE
+    ):
+        mismatches.append("trust")
 
     if snapshot.last_confirmed is not None:
         expected = note.last_confirmed.isoformat() if note.last_confirmed else None
