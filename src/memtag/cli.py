@@ -9,6 +9,13 @@ from memtag import __version__
 from memtag.gc import gc_vault
 from memtag.lint import lint_vault
 from memtag.pack import format_pack, pack_vault
+from memtag.vault import parse_candidate_paths
+
+
+def _read_stdin_candidates() -> list[str]:
+    if sys.stdin.isatty():
+        return []
+    return sys.stdin.read().splitlines()
 
 
 def cmd_lint(args: argparse.Namespace) -> int:
@@ -17,12 +24,17 @@ def cmd_lint(args: argparse.Namespace) -> int:
         print(f"memtag: vault not found: {vault}", file=sys.stderr)
         return 1
 
-    report = lint_vault(vault)
+    report = lint_vault(
+        vault,
+        write=args.write,
+        detect_tag_contradictions=args.tag_contradictions,
+    )
     if args.json:
         payload = {
             "vault": str(vault),
             "scanned": report.scanned,
             "memtagged": report.memtagged,
+            "written": report.written,
             "errors": report.error_count,
             "warnings": report.warning_count,
             "issues": [
@@ -40,6 +52,8 @@ def cmd_lint(args: argparse.Namespace) -> int:
     else:
         print(f"memtag lint — {vault}")
         print(f"scanned {report.scanned} notes ({report.memtagged} memtagged)")
+        if report.written:
+            print(f"wrote derived block to {report.written} notes")
         if not report.issues:
             print("ok — no issues")
         else:
@@ -64,7 +78,23 @@ def cmd_pack(args: argparse.Namespace) -> int:
         print(f"memtag: vault not found: {vault}", file=sys.stderr)
         return 1
 
-    result = pack_vault(vault, task=args.task or "", budget=args.budget)
+    candidate_lines = list(args.paths or [])
+    if args.stdin:
+        candidate_lines.extend(_read_stdin_candidates())
+
+    candidate_paths = None
+    if candidate_lines:
+        candidate_paths = parse_candidate_paths(vault, candidate_lines)
+        if not candidate_paths:
+            print("memtag: no candidate paths resolved from --paths or stdin", file=sys.stderr)
+            return 1
+
+    result = pack_vault(
+        vault,
+        task=args.task or "",
+        budget=args.budget,
+        candidate_paths=candidate_paths,
+    )
     if args.json:
         payload = {
             "vault": str(vault),
@@ -73,6 +103,8 @@ def cmd_pack(args: argparse.Namespace) -> int:
             "used_tokens": result.used_tokens,
             "skipped_expired": result.skipped_expired,
             "skipped_deprecated": result.skipped_deprecated,
+            "skipped_superseded": result.skipped_superseded,
+            "skipped_not_candidate": result.skipped_not_candidate,
             "selected": [str(n.path.relative_to(vault)) for n in result.selected],
             "context": format_pack(result),
         }
@@ -84,11 +116,14 @@ def cmd_pack(args: argparse.Namespace) -> int:
                 f"~{result.used_tokens}/{result.budget} tokens",
                 file=sys.stderr,
             )
-            print(
-                f"# skipped: {result.skipped_expired} expired, "
-                f"{result.skipped_deprecated} deprecated",
-                file=sys.stderr,
+            skipped = (
+                f"{result.skipped_expired} expired, "
+                f"{result.skipped_deprecated} deprecated, "
+                f"{result.skipped_superseded} superseded"
             )
+            if result.skipped_not_candidate:
+                skipped += f", {result.skipped_not_candidate} not in candidates"
+            print(f"# skipped: {skipped}", file=sys.stderr)
         print(format_pack(result), end="")
     return 0
 
@@ -137,12 +172,34 @@ def build_parser() -> argparse.ArgumentParser:
     lint.add_argument("vault", nargs="?", default=".", help="Path to Obsidian vault")
     lint.add_argument("--json", action="store_true", help="JSON output for CI / agents")
     lint.add_argument("--strict", action="store_true", help="Exit non-zero on warnings")
+    lint.add_argument(
+        "--write",
+        action="store_true",
+        help="Persist derived trust block to each memtagged note",
+    )
+    lint.add_argument(
+        "--tag-contradictions",
+        action="store_true",
+        help="Also flag contradictions from shared tags (noisy on large vaults)",
+    )
     lint.set_defaults(func=cmd_lint)
 
     pack = sub.add_parser("pack", help="Pack trustworthy context for the next agent loop")
     pack.add_argument("vault", nargs="?", default=".", help="Path to Obsidian vault")
     pack.add_argument("--task", default="", help="Current task (improves relevance ranking)")
     pack.add_argument("--budget", type=int, default=8000, help="Token budget (default: 8000)")
+    pack.add_argument(
+        "--paths",
+        nargs="+",
+        default=[],
+        metavar="PATH",
+        help="Only consider these vault notes (repeatable)",
+    )
+    pack.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read additional candidate paths from stdin (one per line)",
+    )
     pack.add_argument("--json", action="store_true", help="JSON output with selected files")
     pack.add_argument("--stats", action="store_true", help="Print packing stats to stderr")
     pack.set_defaults(func=cmd_pack)

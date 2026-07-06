@@ -28,8 +28,14 @@ class MemoryMeta:
     expires: date | None = None
     supersedes: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+    subject: str | None = None
     body: str = ""
     raw_frontmatter: dict[str, Any] = field(default_factory=dict)
+    # Derived — computed by memtag; persisted by lint --write
+    trust: float | None = None
+    last_confirmed: date | None = None
+    contradicted_by: list[str] = field(default_factory=list)
+    is_superseded: bool = False
 
     @property
     def is_memtagged(self) -> bool:
@@ -51,20 +57,12 @@ class MemoryMeta:
 
     @property
     def trust_score(self) -> float:
+        """Derived trust after vault-level computation; falls back to a low prior."""
+        if self.trust is not None:
+            return self.trust
         if not self.is_memtagged:
             return 0.35
-        base = self.confidence if self.confidence is not None else 0.5
-        if self.status == MemoryStatus.FACT.value:
-            base += 0.15
-        elif self.status == MemoryStatus.HYPOTHESIS.value:
-            base -= 0.1
-        elif self.status == MemoryStatus.DEPRECATED.value:
-            base = 0.0
-        if self.is_expired:
-            base *= 0.25
-        if self.source and self.source.startswith("human:"):
-            base += 0.1
-        return max(0.0, min(1.0, base))
+        return 0.5
 
 
 @dataclass
@@ -81,6 +79,7 @@ class LintReport:
     issues: list[LintIssue] = field(default_factory=list)
     scanned: int = 0
     memtagged: int = 0
+    written: int = 0
 
     @property
     def error_count(self) -> int:
@@ -98,6 +97,8 @@ class PackResult:
     used_tokens: int
     skipped_expired: int
     skipped_deprecated: int
+    skipped_superseded: int = 0
+    skipped_not_candidate: int = 0
 
 
 def parse_date(value: Any) -> date | None:

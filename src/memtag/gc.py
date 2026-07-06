@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 from memtag.models import MemoryStatus
 from memtag.parser import render_frontmatter
+from memtag.trust import enrich_vault
 from memtag.vault import load_vault
 
 
@@ -25,11 +25,18 @@ def gc_vault(vault: Path, *, dry_run: bool = False) -> GcResult:
     if not dry_run:
         archive_dir.mkdir(parents=True, exist_ok=True)
 
-    for note in load_vault(vault):
+    notes = load_vault(vault)
+    enrich_vault(notes, vault)
+
+    for note in notes:
         if not note.is_memtagged:
             continue
 
-        should_archive = note.is_expired or note.status == MemoryStatus.DEPRECATED.value
+        should_archive = (
+            note.is_expired
+            or note.status == MemoryStatus.DEPRECATED.value
+            or note.is_superseded
+        )
         if not should_archive:
             continue
 

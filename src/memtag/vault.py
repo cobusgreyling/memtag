@@ -21,12 +21,49 @@ def load_vault(vault: Path) -> list[MemoryMeta]:
     return [parse_memory_file(path) for path in discover_markdown(vault)]
 
 
+def resolve_note_path(vault: Path, ref: str) -> Path | None:
+    """Resolve a vault-relative path, filename, or absolute path to a markdown note."""
+    ref = ref.strip()
+    if not ref or ref.startswith("#"):
+        return None
+
+    candidate = Path(ref)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+        return resolved if resolved.is_file() else None
+
+    direct = (vault / ref).resolve()
+    if direct.is_file():
+        return direct
+
+    target_name = Path(ref).name.lower()
+    if not target_name.endswith(".md"):
+        target_name = f"{target_name}.md"
+
+    for path in discover_markdown(vault):
+        if path.name.lower() == target_name:
+            return path.resolve()
+        if path.stem.lower() == Path(ref).stem.lower():
+            return path.resolve()
+    return None
+
+
+def parse_candidate_paths(vault: Path, lines: list[str]) -> list[Path]:
+    """Resolve candidate note paths from stdin lines or CLI --paths values."""
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for line in lines:
+        path = resolve_note_path(vault, line)
+        if path is None or path in seen:
+            continue
+        seen.add(path)
+        resolved.append(path)
+    return resolved
+
+
 def resolve_supersedes_target(vault: Path, link: str) -> Path | None:
     slug = link.split("|", 1)[0].strip()
-    if slug.endswith(".md"):
-        slug_path = slug
-    else:
-        slug_path = f"{slug}.md"
+    slug_path = slug if slug.endswith(".md") else f"{slug}.md"
 
     direct = vault / slug_path
     if direct.exists():

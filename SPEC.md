@@ -6,7 +6,7 @@ It does not replace your memory store. It makes **human-readable wiki files** sa
 
 ## Core rule
 
-**Authors touch declared. memtag owns derived. `pack` and `gc` read `trust`, never `confidence`.**
+**Authors touch declared. memtag owns derived. `pack` and `gc` read derived `trust`, never raw `confidence`.**
 
 - `confidence` is a **prior** — the author's starting guess at write time.
 - `trust` is the **product** — memtag's computed score after provenance, decay, contradictions, and human touch.
@@ -26,7 +26,8 @@ Storing agent self-reported confidence as ground truth is circular. memtag break
 | `created` | no | ISO date | When the note was written |
 | `expires` | no | ISO date | Hard stop — note should not be packed after this date |
 | `supersedes` | no | string or list | Wikilink(s) this note explicitly replaces |
-| `tags` | no | string or list | Topic tags for relevance and contradiction detection |
+| `subject` | no | string | Shared key for contradiction detection (same subject + different body) |
+| `tags` | no | string or list | Topic tags for relevance ranking |
 
 The note **body** is the atomic claim. A separate `claim` field may be added in a future spec revision; v1 uses body text.
 
@@ -36,13 +37,11 @@ The note **body** is the atomic claim. A separate `claim` field may be added in 
 |-------|------|-------------|
 | `trust` | float | 0.0–1.0 score `pack` ranks on |
 | `last_confirmed` | ISO date | Last human touch or explicit confirmation |
-| `contradicted_by` | list | Note IDs/paths that conflict with this one |
+| `contradicted_by` | list | Note stems that conflict with this one |
 
-**v1 behavior:** derived fields are computed at read time and not written to frontmatter.
+`memtag lint --write` recomputes and persists the derived block. `pack` and `gc` load persisted values and recompute vault-level trust on each run.
 
-**v1.1 behavior:** `memtag lint` recomputes and writes the derived block back to each note. `pack` and `gc` prefer persisted `trust` when present.
-
-Authors must never edit derived fields. CI may reject hand-edited `trust` values once v1.1 ships.
+Authors must never edit derived fields. CI may reject hand-edited `trust` values.
 
 ## Source
 
@@ -72,23 +71,33 @@ memtag updates `trust` from behavior. Declared `confidence` is only the starting
 
 | Signal | What it means | Effect on trust |
 |--------|---------------|-----------------|
-| **Contradiction** | A newer note conflicts with this one | Sharp decay |
+| **Supersedes** | A newer note replaces this one | Trust → 0; excluded from `pack` |
+| **Contradiction** | A higher-trust note conflicts with this one | ×0.5 decay; `contradicted_by` set |
 | **Human touch** | A person edited or blessed the note | Strong boost; resets confirmation clock |
-| **Half-life** | Time since last confirmation vs. type-based decay rate | Gradual decay |
+| **Half-life** | Time since last confirmation vs. type-based decay rate | Gradual decay (v2) |
 | **Provenance** | `human:` vs `agent:` vs `tool:` | Sets the floor |
 | **Outcome** (v2) | Packing this note preceded a success/failure | Reinforcement |
 
-### v1 trust computation (read-time)
+### v1 trust computation (vault-level)
 
-Current implementation approximates derived trust without persisting it:
+Trust is computed in a vault-wide pass, not per-note in isolation:
 
 1. Start from declared `confidence` (default 0.5 if missing).
 2. Adjust by `status`: `fact` +0.15, `hypothesis` −0.10, `deprecated` → 0.
 3. Boost `human:` sources +0.10.
 4. Multiply by 0.25 if past `expires`.
-5. Combine with task relevance in `pack`: `score = trust × 0.6 + relevance × 0.4`.
+5. Zero-out notes reachable through a `supersedes` chain.
+6. Down-weight notes contradicted by a higher-trust peer (×0.5).
+7. Combine with task relevance in `pack`: `score = trust × 0.6 + relevance × 0.4`.
 
-Contradictions are detected via shared `tags` with differing body content and surfaced as lint warnings. Trust penalties on contradiction ship in v1.1.
+### Contradiction detection
+
+By default, contradictions require one of:
+
+- **Subject collision** — active notes share a `subject` with different body text.
+- **Supersedes collision** — multiple active notes claim to supersede the same target with different body text.
+
+Pass `--tag-contradictions` to `lint` for the legacy O(n²) tag-overlap heuristic.
 
 ## Example
 
@@ -107,7 +116,7 @@ tags: [preferences, editor]
 User prefers terse responses and no emojis.
 ```
 
-After `memtag lint` (v1.1), memtag may append:
+After `memtag lint --write`:
 
 ```yaml
 trust: 0.91
@@ -123,7 +132,7 @@ contradicted_by: []
 |---------|------|---------|
 | `memtag lint <vault>` | sense | Validate declared fields; recompute trust; find stale/contradictory notes |
 | `memtag pack <vault> --task "..." --budget 8000` | select | Return budgeted context ranked by derived trust |
-| `memtag gc <vault>` | sweep | Move expired/deprecated notes to `.memtag/archive/` (never delete) |
+| `memtag gc <vault>` | sweep | Move expired/deprecated/superseded notes to `.memtag/archive/` (never delete) |
 
 ### Flags
 
@@ -131,10 +140,21 @@ contradicted_by: []
 |------|----------|-------------|
 | `--json` | all | Machine-readable output for CI and agents |
 | `--strict` | lint | Exit non-zero on warnings |
+| `--write` | lint | Persist derived trust block to each note |
+| `--tag-contradictions` | lint | Enable tag-overlap contradiction heuristic |
 | `--task` | pack | Current task string for relevance ranking |
 | `--budget` | pack | Token budget (default: 8000) |
+| `--paths` | pack | Only consider these vault notes (repeatable) |
+| `--stdin` | pack | Read additional candidate paths from stdin (one per line) |
 | `--stats` | pack | Print packing stats to stderr |
 | `--dry-run` | gc | Show what would be archived |
+
+### Lint codes
+
+| Code | Severity | Meaning |
+|------|----------|---------|
+| `MISSING_EXPIRES` | warning | `hypothesis` without `expires` |
+| `DERIVED_TAMPERED` | error | Persisted `trust` / `last_confirmed` / `contradicted_by` do not match recomputed values |
 
 ## Agent integration
 
@@ -144,7 +164,7 @@ Agents call `memtag pack` at loop start and write new notes with declared frontm
 # In your agent harness (Grok, Cursor, Claude Code, etc.)
 CONTEXT=$(memtag pack ~/vault --task "$GOAL" --budget 8000)
 # ... run loop ...
-memtag lint ~/vault --json --strict
+memtag lint ~/vault --write --json --strict
 ```
 
 Agents write **declared** fields only. They must not set `trust`, `last_confirmed`, or `contradicted_by`.
@@ -161,10 +181,11 @@ memtag is a **vault hygiene CLI**, not an agent chat CLI.
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Declared schema, read-time trust, `pack`/`lint`/`gc` |
-| **v1.1** | Persist derived block; contradiction trust decay; dedup in `pack` |
+| **v1** (`0.1.0`) | Declared schema, vault-level derived trust, persisted derived block, supersession-aware `pack`/`gc` |
 | **v2** | Outcome reinforcement from loop success/failure |
 
 ## Versioning
 
 When `memtag` frontmatter is present, the `memtag` field must equal `"1"` for this spec. Tools should warn on unknown versions and document migration paths before bumping to `"2"`.
+
+Package version (`0.1.0`) follows semver and is independent of the spec version (`"1"`).
